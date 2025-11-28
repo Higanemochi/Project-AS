@@ -1,16 +1,17 @@
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using UnityEngine;
 
 public class ScriptParser
 {
-    private static readonly Regex TagRegex = new Regex(@"^\[(\w+)(?:\s+(.*))?\]$");
-    private static readonly Regex AttrRegex = new Regex(@"(\w+)=(""[^""]*""|'[^']*'|[^ \t\]]+)");
-    private static readonly Regex ChoiceOptionRegex = new Regex(@"^\*\s*(.+?)\s*>\s*(.+)$");
+    private static readonly Regex TagRegex = new(@"^\[(\w+)(?:\s+(.*))?\]$");
+    private static readonly Regex AttrRegex = new(@"(\w+)=(""[^""]*""|'[^']*'|[^ \t\]]+)");
+    private static readonly Regex ChoiceOptionRegex = new(@"^\*\s*(.+?)\s*>\s*(.+)$");
 
     public static Script Parse(string text)
     {
         List<ScriptAction> actions = new();
-        Dictionary<string, int> sceneMap = new();
+        Dictionary<string, int> labelMap = new();
 
         ScriptAction lastChoice = null;
 
@@ -31,16 +32,19 @@ public class ScriptParser
             {
                 string tagName = tagMatch.Groups[1].Value;
                 string attrString = tagMatch.Groups[2].Value;
+                Debug.Log($"ScriptParser :: Tag: {tagName} {attrString}");
 
                 var scriptAction = new ScriptAction { Type = tagName };
-                ParseAttributes(attrString, scriptAction.Params);
 
-                if (tagName == "scene")
+                if (!attrString.Contains("=")) scriptAction.Params["content"] = attrString;
+                else ParseAttributes(attrString, scriptAction.Params);
+
+                if (tagName == "label")
                 {
-                    string sceneName = scriptAction.GetParam("name");
-                    if (!string.IsNullOrEmpty(sceneName) && !sceneMap.ContainsKey(sceneName))
+                    string label = scriptAction.GetParam("content");
+                    if (!string.IsNullOrEmpty(label) && !labelMap.ContainsKey(label))
                     {
-                        sceneMap[sceneName] = actions.Count;
+                        labelMap[label] = actions.Count;
                     }
                 }
 
@@ -71,7 +75,7 @@ public class ScriptParser
             actions.Add(new ScriptAction { Type = "msg", Params = { { "content", line } } });
         }
 
-        return new Script(actions, sceneMap);
+        return new Script(actions, labelMap);
     }
 
     private static void ParseAttributes(string attrString, Dictionary<string, object> paramDict)
@@ -85,7 +89,7 @@ public class ScriptParser
             string rawValue = m.Groups[2].Value;
 
             if (rawValue.Length >= 2 && (rawValue.StartsWith("\"") || rawValue.StartsWith("'")))
-                rawValue = rawValue.Substring(1, rawValue.Length - 2);
+                rawValue = rawValue[1..^1];
 
             paramDict[key] = rawValue;
         }

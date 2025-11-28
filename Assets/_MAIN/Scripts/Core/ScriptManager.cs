@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Collections;
 using PrimeTween;
 using TMPro;
 using UnityEngine;
@@ -38,36 +37,10 @@ public class ScriptManager : MonoBehaviour
         dialogueText.SetText(" ");
         dialogueText.ForceMeshUpdate(true);
 
-        StartCoroutine(TestAnim());
-
         _currentScript = ScriptParser.Parse(scriptFile.text);
         NextStep();
     }
 
-    IEnumerator TestAnim()
-    {
-        director.AddCharacter("chino01", VisualNovelLayoutDirector.EntranceType.Center);
-        yield return new WaitForSeconds(1f);
-        director.AddCharacter("chino02", VisualNovelLayoutDirector.EntranceType.Left);
-        yield return new WaitForSeconds(1f);
-        director.AddCharacter("chino03", VisualNovelLayoutDirector.EntranceType.Right);
-        yield return new WaitForSeconds(1f);
-        director.RemoveCharacter("chino02", VisualNovelLayoutDirector.EntranceType.Left);
-        yield return new WaitForSeconds(1f);
-        director.RemoveCharacter("chino03", VisualNovelLayoutDirector.EntranceType.Right);
-        yield return new WaitForSeconds(1f);
-        director.PlayAction("chino01", VisualNovelLayoutDirector.ActionType.Jump);
-        yield return new WaitForSeconds(1f);
-        director.PlayAction("chino01", VisualNovelLayoutDirector.ActionType.Shake);
-        yield return new WaitForSeconds(1f);
-        director.PlayAction("chino01", VisualNovelLayoutDirector.ActionType.Nod);
-        yield return new WaitForSeconds(1f);
-        director.PlayAction("chino01", VisualNovelLayoutDirector.ActionType.Punch);
-        yield return new WaitForSeconds(1f);
-        director.AddCharacter("chino02", VisualNovelLayoutDirector.EntranceType.Left);
-        yield return new WaitForSeconds(1f);
-        director.AddCharacter("chino03", VisualNovelLayoutDirector.EntranceType.Center);
-    }
 
     void Update()
     {
@@ -96,10 +69,10 @@ public class ScriptManager : MonoBehaviour
 
     private void ExecuteAction(ScriptAction action)
     {
-        if (action.Type == "scene")
+        if (action.Type == "label")
         {
-            string sceneName = action.GetParam("name");
-            Debug.Log($"ScriptManager :: Change Scene: {sceneName}");
+            string labelName = action.GetParam("content");
+            Debug.Log($"ScriptManager :: Change Label: {labelName}");
             NextStep();
             return;
         }
@@ -107,6 +80,61 @@ public class ScriptManager : MonoBehaviour
         {
             string bgFile = action.GetParam("file");
             Debug.Log($"ScriptManager :: Change Background: {bgFile}");
+            NextStep();
+            return;
+        }
+        if (action.Type == "char")
+        {
+            string charFile = action.GetParam("img");
+            string charEntrance = action.GetParam("enter");
+            if (charEntrance == "") charEntrance = "center";
+            if (charEntrance.ToLower() == "center") director.AddCharacter(charFile, VisualNovelLayoutDirector.EntranceType.Center);
+            if (charEntrance.ToLower() == "left") director.AddCharacter(charFile, VisualNovelLayoutDirector.EntranceType.Left);
+            if (charEntrance.ToLower() == "right") director.AddCharacter(charFile, VisualNovelLayoutDirector.EntranceType.Right);
+            if (charEntrance.ToLower() == "bottomleft") director.AddCharacter(charFile, VisualNovelLayoutDirector.EntranceType.BottomLeft);
+            if (charEntrance.ToLower() == "bottomright") director.AddCharacter(charFile, VisualNovelLayoutDirector.EntranceType.BottomRight);
+            Debug.Log($"ScriptManager :: Character: {charFile}");
+            NextStep();
+            return;
+        }
+        if (action.Type == "remove")
+        {
+            string charName = action.GetParam("target");
+            string exitType = action.GetParam("exit");
+            if (exitType == "") exitType = "center";
+
+            VisualNovelLayoutDirector.EntranceType type = VisualNovelLayoutDirector.EntranceType.Center;
+            if (exitType.ToLower() == "left") type = VisualNovelLayoutDirector.EntranceType.Left;
+            if (exitType.ToLower() == "right") type = VisualNovelLayoutDirector.EntranceType.Right;
+            if (exitType.ToLower() == "bottomleft") type = VisualNovelLayoutDirector.EntranceType.BottomLeft;
+            if (exitType.ToLower() == "bottomright") type = VisualNovelLayoutDirector.EntranceType.BottomRight;
+            if (exitType.ToLower() == "top") type = VisualNovelLayoutDirector.EntranceType.Top;
+
+            director.RemoveCharacter(charName, type);
+            Debug.Log($"ScriptManager :: Remove Character: {charName} to {exitType}");
+            NextStep();
+            return;
+        }
+        if (action.Type == "action")
+        {
+            string charName = action.GetParam("target");
+            string charAnim = action.GetParam("anim");
+            if (charAnim == "") charAnim = "center";
+            if (charAnim.ToLower() == "jump") director.PlayAction(charName, VisualNovelLayoutDirector.ActionType.Jump);
+            if (charAnim.ToLower() == "shake") director.PlayAction(charName, VisualNovelLayoutDirector.ActionType.Shake);
+            if (charAnim.ToLower() == "shakehorizontal") director.PlayAction(charName, VisualNovelLayoutDirector.ActionType.ShakeHorizontal);
+            if (charAnim.ToLower() == "nod") director.PlayAction(charName, VisualNovelLayoutDirector.ActionType.Nod);
+            if (charAnim.ToLower() == "punch") director.PlayAction(charName, VisualNovelLayoutDirector.ActionType.Punch);
+            Debug.Log($"ScriptManager :: Action: {charName} {charAnim}");
+            NextStep();
+            return;
+        }
+        if (action.Type == "expr")
+        {
+            string charName = action.GetParam("target");
+            string charExpr = action.GetParam("expr");
+            director.ChangeExpression(charName, charExpr);
+            Debug.Log($"ScriptManager :: Expression: {charName} {charExpr}");
             NextStep();
             return;
         }
@@ -129,8 +157,8 @@ public class ScriptManager : MonoBehaviour
         }
         if (action.Type == "goto")
         {
-            string targetScene = action.GetParam("scene");
-            _currentScript.JumpTo(targetScene);
+            string targetLabel = action.GetParam("content");
+            _currentScript.JumpTo(targetLabel);
             NextStep();
             return;
         }
@@ -182,9 +210,11 @@ public class ScriptManager : MonoBehaviour
 
     private bool IsPointerOverInteractiveUI()
     {
-        PointerEventData eventData = new PointerEventData(EventSystem.current);
-        eventData.position = Input.mousePosition;
-        List<RaycastResult> results = new List<RaycastResult>();
+    PointerEventData eventData = new(EventSystem.current)
+    {
+      position = Input.mousePosition
+    };
+    List<RaycastResult> results = new();
         EventSystem.current.RaycastAll(eventData, results);
 
         foreach (RaycastResult result in results)
@@ -238,7 +268,7 @@ public class ScriptManager : MonoBehaviour
 
                 if (linkName == "shake")
                 {
-                    Vector3 offset = new Vector3(
+                    Vector3 offset = new(
                         Random.Range(-shakeAmount, shakeAmount),
                         Random.Range(-shakeAmount, shakeAmount)
                     );

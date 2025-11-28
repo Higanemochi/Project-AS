@@ -5,12 +5,12 @@ public class Script
 {
     private List<ScriptAction> _actions;
     private int _currentIndex = -1;
-    private Dictionary<string, int> _sceneMap = new Dictionary<string, int>();
+    private Dictionary<string, int> _labelMap = new();
 
-    public Script(List<ScriptAction> actions, Dictionary<string, int> sceneMap)
+    public Script(List<ScriptAction> actions, Dictionary<string, int> labelMap)
     {
         _actions = actions;
-        _sceneMap = sceneMap;
+        _labelMap = labelMap;
         _currentIndex = -1;
     }
 
@@ -37,10 +37,10 @@ public class Script
         return null;
     }
 
-    public void JumpTo(string sceneName)
+    public void JumpTo(string labelName)
     {
-        _currentIndex = _sceneMap[sceneName] - 1; // Continue() 호출 시 해당 인덱스가 되도록 -1
-        Debug.Log($"Script :: Jump to scene: {sceneName} (Index: {_currentIndex + 1})");
+        _currentIndex = _labelMap[labelName] - 1; // Continue() 호출 시 해당 인덱스가 되도록 -1
+        Debug.Log($"Script :: Jump to label: {labelName} (Index: {_currentIndex + 1})");
     }
 
     public void Save()
