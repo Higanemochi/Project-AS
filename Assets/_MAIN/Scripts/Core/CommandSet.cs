@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-public class ScriptAction
+public class CommandSet
 {
     public string Type { get; set; }
     public Dictionary<string, object> Params { get; set; } = new();

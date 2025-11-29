@@ -1,18 +1,18 @@
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 
-public class ScriptParser
+public class Parser
 {
     private static readonly Regex TagRegex = new(@"^\[(\w+)(?:\s+(.*))?\]$");
     private static readonly Regex AttrRegex = new(@"(\w+)=(""[^""]*""|'[^']*'|[^ \t\]]+)");
-    private static readonly Regex ChoiceOptionRegex = new(@"^\*\s*(.+?)\s*>\s*(.+)$");
+    private static readonly Regex ChoiceRegex = new(@"^\*\s*(.+?)\s*>\s*(.+)$");
 
-    public static Script Parse(string text)
+    public static Command Parse(string text)
     {
-        List<ScriptAction> actions = new();
+        List<CommandSet> commands = new();
         Dictionary<string, int> labelMap = new();
 
-        ScriptAction lastChoice = null;
+        CommandSet lastChoice = null;
 
         text = Regex.Replace(text, "<shake>", "<link=shake>");
         text = Regex.Replace(text, "</shake>", "</link>");
@@ -32,7 +32,7 @@ public class ScriptParser
                 string tagName = tagMatch.Groups[1].Value;
                 string attrString = tagMatch.Groups[2].Value;
 
-                var scriptAction = new ScriptAction { Type = tagName };
+                var scriptAction = new CommandSet { Type = tagName };
 
                 if (!attrString.Contains("=")) scriptAction.Params["content"] = attrString;
                 else ParseAttributes(attrString, scriptAction.Params);
@@ -42,7 +42,7 @@ public class ScriptParser
                     string label = scriptAction.GetParam("content");
                     if (!string.IsNullOrEmpty(label) && !labelMap.ContainsKey(label))
                     {
-                        labelMap[label] = actions.Count;
+                        labelMap[label] = commands.Count;
                     }
                 }
 
@@ -52,11 +52,11 @@ public class ScriptParser
                     lastChoice = scriptAction;
                 }
 
-                actions.Add(scriptAction);
+                commands.Add(scriptAction);
                 continue;
             }
 
-            Match choiceMatch = ChoiceOptionRegex.Match(line);
+            Match choiceMatch = ChoiceRegex.Match(line);
             if (choiceMatch.Success && lastChoice != null)
             {
                 lastChoice.Choices.Add(
@@ -70,10 +70,10 @@ public class ScriptParser
                 continue;
             }
 
-            actions.Add(new ScriptAction { Type = "msg", Params = { { "content", line } } });
+            commands.Add(new CommandSet { Type = "msg", Params = { { "content", line } } });
         }
 
-        return new Script(actions, labelMap);
+        return new Command(commands, labelMap);
     }
 
     private static void ParseAttributes(string attrString, Dictionary<string, object> paramDict)

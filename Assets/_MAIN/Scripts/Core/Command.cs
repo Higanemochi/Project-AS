@@ -1,13 +1,13 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public class Script
+public class Command
 {
-    private List<ScriptAction> _actions;
+    private List<CommandSet> _actions;
     private int _currentIndex = -1;
     private Dictionary<string, int> _labelMap = new();
 
-    public Script(List<ScriptAction> actions, Dictionary<string, int> labelMap)
+    public Command(List<CommandSet> actions, Dictionary<string, int> labelMap)
     {
         _actions = actions;
         _labelMap = labelMap;
@@ -19,25 +19,25 @@ public class Script
         return _currentIndex < _actions.Count - 1;
     }
 
-    public ScriptAction Continue()
+    public CommandSet Continue()
     {
         if (!HasNextAction())
             return null;
 
         _currentIndex++;
-        ScriptAction currentAction = _actions[_currentIndex];
+        CommandSet currentAction = _actions[_currentIndex];
 
         return currentAction;
     }
 
-    public ScriptAction GetCurrent()
+    public CommandSet GetCurrent()
     {
         if (_currentIndex >= 0 && _currentIndex < _actions.Count)
             return _actions[_currentIndex];
         return null;
     }
 
-    public ScriptAction PeekNext()
+    public CommandSet PeekNext()
     {
         if (_currentIndex < _actions.Count - 1)
             return _actions[_currentIndex + 1];

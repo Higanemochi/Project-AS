@@ -1,10 +1,10 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public class VariableManager
+public class Store
 {
-    private static VariableManager _instance;
-    public static VariableManager Instance => _instance ??= new VariableManager();
+    private static Store _instance;
+    public static Store Instance => _instance ??= new Store();
 
     private Dictionary<string, object> _variables = new();
 

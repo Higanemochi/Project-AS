@@ -4,7 +4,7 @@ using PrimeTween;
 using UnityEngine;
 using UnityEngine.UI;
 
-public class VisualNovelLayoutDirector : MonoBehaviour
+public class VNDirector : MonoBehaviour
 {
     // ========================= [Enums] =========================
     public enum EntranceType { Left, Right, BottomLeft, BottomRight, Center, Top, LeftRun, RightRun }
