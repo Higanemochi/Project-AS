@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using System.Text.RegularExpressions;
 
 public class Store
 {
@@ -54,20 +55,17 @@ public class Store
         {
             Debug.LogWarning($"VariableManager :: Cannot add {valueStr} to {name} (Type: {current.GetType()})");
         }
-
-
         Debug.Log($"VariableManager :: Add {name} += {valueStr} -> {_variables[name]}");
     }
-
 
     public string ReplaceVariables(string text)
     {
         if (string.IsNullOrEmpty(text) || !text.Contains("{")) return text;
 
-        foreach (var kvp in _variables)
+        return Regex.Replace(text, @"\{([^}]+)\}", match =>
         {
-            text = text.Replace($"{{{kvp.Key}}}", kvp.Value.ToString());
-        }
-        return text;
+            string key = match.Groups[1].Value;
+            return _variables.ContainsKey(key) ? _variables[key].ToString() : match.Value;
+        });
     }
 }

@@ -62,7 +62,6 @@ public class VNManager : MonoBehaviour
         NextStep();
     }
 
-
     void Update()
     {
         DisplayEffects(dialogueText);
