@@ -7,12 +7,12 @@ public class Parser
     private static readonly Regex AttrRegex = new(@"(\w+)=(""[^""]*""|'[^']*'|[^ \t\]]+)");
     private static readonly Regex ChoiceRegex = new(@"^\*\s*(.+?)\s*>\s*(.+)$");
 
-    public static Command Parse(string text)
+    public static Script Parse(string text)
     {
-        List<CommandSet> commands = new();
+        List<Command> commands = new();
         Dictionary<string, int> labelMap = new();
 
-        CommandSet lastChoice = null;
+        Command lastChoice = null;
 
         text = Regex.Replace(text, "<shake>", "<link=shake>");
         text = Regex.Replace(text, "</shake>", "</link>");
@@ -32,7 +32,7 @@ public class Parser
                 string tagName = tagMatch.Groups[1].Value;
                 string attrString = tagMatch.Groups[2].Value;
 
-                var scriptAction = new CommandSet { Type = tagName };
+                var scriptAction = new Command { Type = tagName };
 
                 if (!attrString.Contains("=")) scriptAction.Params["content"] = attrString;
                 else ParseAttributes(attrString, scriptAction.Params);
@@ -70,10 +70,10 @@ public class Parser
                 continue;
             }
 
-            commands.Add(new CommandSet { Type = "msg", Params = { { "content", line } } });
+            commands.Add(new Command { Type = "msg", Params = { { "content", line } } });
         }
 
-        return new Command(commands, labelMap);
+        return new Script(commands, labelMap);
     }
 
     private static void ParseAttributes(string attrString, Dictionary<string, object> paramDict)

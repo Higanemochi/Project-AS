@@ -1,5 +1,7 @@
-using System.Collections;
+using System;
 using System.Collections.Generic;
+using System.Threading;
+using Cysharp.Threading.Tasks;
 using PrimeTween;
 using UnityEngine;
 using UnityEngine.UI;
@@ -7,52 +9,58 @@ using UnityEngine.UI;
 public class VNDirector : MonoBehaviour
 {
     // ========================= [Enums] =========================
-    public enum EntranceType { Left, Right, BottomLeft, BottomRight, Center, Top, LeftRun, RightRun }
-    public enum ActionType { Jump, Shake, Nod, Punch, Run }
+    public enum DirectionType { Left, Right, BottomLeft, BottomRight, Center, Top, RunLeft, RunRight }
+    public enum AnimationType { Jump, Shake, Nod, Punch, Run }
 
     [Header("UI 연결")]
     public Transform characterPanel;
-    public GameObject slotPrefab;
 
     [Header("설정")]
     public float charWidth = 350f;
     public float defaultDuration = 0.5f;
     public float moveDistance = 800f;
 
-    // ========================= [Queue System] =========================
-    private Dictionary<string, Queue<IEnumerator>> actionQueues = new();
-    private Dictionary<string, Coroutine> activeCoroutines = new();
+    private const string CharacterPathPrefix = "Images/Characters/";
 
-    private void EnqueueAction(string charName, IEnumerator action)
+    // ========================= [Queue System] =========================
+    // bool argument: isImmediate (skip animation)
+    private Dictionary<string, Queue<Func<bool, UniTask>>> actionQueues = new();
+    private Dictionary<string, CancellationTokenSource> activeCTS = new();
+
+    private void EnqueueAction(string charName, Func<bool, UniTask> actionFactory)
     {
         if (!actionQueues.ContainsKey(charName))
         {
-            actionQueues[charName] = new Queue<IEnumerator>();
+            actionQueues[charName] = new Queue<Func<bool, UniTask>>();
         }
-        actionQueues[charName].Enqueue(action);
+        actionQueues[charName].Enqueue(actionFactory);
 
-        if (!activeCoroutines.ContainsKey(charName) || activeCoroutines[charName] == null)
+        if (!activeCTS.ContainsKey(charName) || activeCTS[charName] == null)
         {
-            activeCoroutines[charName] = StartCoroutine(ProcessActionQueue(charName));
+            var cts = new CancellationTokenSource();
+            activeCTS[charName] = cts;
+            ProcessActionQueue(charName, cts.Token).Forget();
         }
     }
 
     public void CompleteAllActions()
     {
-        // 1. Stop all active processing coroutines
-        foreach (var kvp in activeCoroutines)
+        // 1. Stop all active processing
+        foreach (var kvp in activeCTS)
         {
-            if (kvp.Value != null) StopCoroutine(kvp.Value);
+            kvp.Value?.Cancel();
+            kvp.Value?.Dispose();
         }
-        activeCoroutines.Clear();
+        activeCTS.Clear();
 
         // 2. Process remaining items in queues immediately
         foreach (var queue in actionQueues.Values)
         {
             while (queue.Count > 0)
             {
-                var action = queue.Dequeue();
-                RunImmediate(action);
+                var actionFactory = queue.Dequeue();
+                // Execute immediately (skipping animations)
+                actionFactory(true).Forget();
             }
         }
 
@@ -60,40 +68,44 @@ public class VNDirector : MonoBehaviour
         Tween.CompleteAll();
     }
 
-    private void RunImmediate(IEnumerator enumerator)
+    private async UniTaskVoid ProcessActionQueue(string charName, CancellationToken token)
     {
-        while (enumerator.MoveNext())
+        try
         {
-            var current = enumerator.Current;
-            if (current is IEnumerator nested)
+            while (actionQueues.ContainsKey(charName) && actionQueues[charName].Count > 0)
             {
-                RunImmediate(nested);
-            }
-            // Force complete any tweens that might have been started
-            Tween.CompleteAll();
-        }
-    }
+                if (token.IsCancellationRequested) break;
 
-    private IEnumerator ProcessActionQueue(string charName)
-    {
-        while (actionQueues.ContainsKey(charName) && actionQueues[charName].Count > 0)
-        {
-            IEnumerator action = actionQueues[charName].Dequeue();
-            yield return StartCoroutine(action);
+                var actionFactory = actionQueues[charName].Dequeue();
+                await actionFactory(false); // Normal execution
+            }
         }
-        activeCoroutines.Remove(charName);
+        catch (OperationCanceledException)
+        {
+            // Cancelled
+        }
+        finally
+        {
+            // Only remove if this is the CTS we started with (handling race conditions slightly)
+            if (activeCTS.ContainsKey(charName) && activeCTS[charName].Token == token)
+            {
+                var cts = activeCTS[charName];
+                activeCTS.Remove(charName);
+                cts.Dispose();
+            }
+        }
     }
 
     // ========================= [1. 등장 (Entry)] =========================
-    public void AddCharacter(string fileName, EntranceType type)
+    public void AddCharacter(string fileName, string type)
     {
-        string path = "Images/Characters/" + fileName;
+        string path = CharacterPathPrefix + fileName;
         Sprite loadedSprite = Resources.Load<Sprite>(path);
         Debug.Log($"VisualNovelLayoutDirector :: AddCharacter: {fileName} ({path})");
 
         if (loadedSprite != null)
         {
-            EnqueueAction(fileName, SpawnRoutine(fileName, loadedSprite, type));
+            EnqueueAction(fileName, (isImmediate) => SpawnAsync(fileName, loadedSprite, GetDirectionType(type), isImmediate));
         }
         else
         {
@@ -101,170 +113,110 @@ public class VNDirector : MonoBehaviour
         }
     }
 
-    private IEnumerator SpawnRoutine(string name, Sprite sprite, EntranceType type)
+    private async UniTask SpawnAsync(string name, Sprite sprite, DirectionType type, bool isImmediate)
     {
         if (FindSlot(name) != null)
         {
             Debug.LogWarning($"이미 존재하는 캐릭터입니다: {name}");
-            yield break;
+            return;
         }
-        // 1. 슬롯 생성
-        GameObject newSlot = Instantiate(slotPrefab, characterPanel);
 
-        // 오브젝트 이름을 파일명(ID)으로 설정
-        newSlot.name = name;
-
-        LayoutElement layoutElement = newSlot.GetComponent<LayoutElement>();
-
-        // Slot -> MotionContainer -> Image
-        GameObject motionContainer = new("MotionContainer");
-        RectTransform containerRect = motionContainer.AddComponent<RectTransform>();
-        motionContainer.transform.SetParent(newSlot.transform, false);
-
-        // Container 설정 (부모 꽉 채우기)
-        containerRect.anchorMin = Vector2.zero;
-        containerRect.anchorMax = Vector2.one;
-        containerRect.sizeDelta = Vector2.zero;
-
-        // 기존 Image를 Container 자식으로 이동
-        Transform imageTransform = newSlot.transform.GetChild(0); // Prefab의 첫 번째 자식이 Image라고 가정
-        imageTransform.SetParent(motionContainer.transform, false);
-
-        Image charImage = imageTransform.GetComponent<Image>();
+        // 1. 슬롯 생성 (Programmatic)
+        var (newSlot, layoutElement, containerRect, charImage) = CreateCharacterSlot(name);
 
         // 2. 초기화
         charImage.sprite = sprite;
         FitImageToScreen(charImage);
-        layoutElement.preferredWidth = 0; layoutElement.minWidth = 0;
+        layoutElement.preferredWidth = 0;
+        layoutElement.minWidth = 0;
 
         // 3. 순서 재배치
-        int totalCount = characterPanel.childCount;
-        switch (type)
-        {
-            case EntranceType.Left:
-            case EntranceType.LeftRun:
-            case EntranceType.BottomLeft:
-                newSlot.transform.SetSiblingIndex(0); break;
-            case EntranceType.Right:
-            case EntranceType.RightRun:
-            case EntranceType.BottomRight:
-                newSlot.transform.SetSiblingIndex(totalCount - 1); break;
-            case EntranceType.Center:
-            case EntranceType.Top:
-                // 삭제 중인 캐릭터를 제외하고 순서 계산
-                List<Transform> activeChildren = new();
-                for (int i = 0; i < totalCount; i++)
-                {
-                    Transform child = characterPanel.GetChild(i);
-                    if (child != newSlot.transform && !child.name.Contains("_Removing"))
-                    {
-                        activeChildren.Add(child);
-                    }
-                }
-
-                int targetIndex = activeChildren.Count / 2;
-                if (targetIndex < activeChildren.Count)
-                {
-                    // activeChildren[targetIndex]의 현재 인덱스 앞에 배치
-                    newSlot.transform.SetSiblingIndex(activeChildren[targetIndex].GetSiblingIndex());
-                }
-                else
-                {
-                    // 맨 뒤로
-                    newSlot.transform.SetSiblingIndex(totalCount - 1);
-                }
-                break;
-        }
+        ArrangeSlotOrder(newSlot.transform, type);
 
         // 4. 위치 잡기 및 애니메이션
         Vector2 startPos = GetDirectionVector(type);
         containerRect.anchoredPosition = startPos;
         charImage.color = new Color(1, 1, 1, 0);
 
-        yield return new WaitForEndOfFrame();
+        if (!isImmediate) await UniTask.WaitForEndOfFrame(this);
 
         // Tween 실행 및 대기
-        switch (type)
+        float duration = isImmediate ? 0f : defaultDuration;
+
+        if (type == DirectionType.RunLeft || type == DirectionType.RunRight)
         {
-            case EntranceType.LeftRun:
-            case EntranceType.RightRun:
-                StartCoroutine(PlayActionRoutine(newSlot.transform, ActionType.Run));
-                break;
+            PlayActionAsync(newSlot.transform, AnimationType.Run, isImmediate).Forget();
         }
 
-        yield return Sequence.Create()
-            .Group(Tween.Custom(layoutElement, 0f, charWidth, defaultDuration, (t, x) => t.preferredWidth = x, Ease.OutQuart))
-            .Group(Tween.UIAnchoredPosition(containerRect, Vector2.zero, defaultDuration, Ease.OutQuart))
-            .Group(Tween.Alpha(charImage, 1f, defaultDuration))
-            .ToYieldInstruction();
+        await Sequence.Create()
+            .Group(Tween.Custom(layoutElement, 0f, charWidth, duration, (t, x) => t.preferredWidth = x, Ease.OutQuart))
+            .Group(Tween.UIAnchoredPosition(containerRect, Vector2.zero, duration, Ease.OutQuart))
+            .Group(Tween.Alpha(charImage, 1f, duration))
+            .ToUniTask(cancellationToken: this.GetCancellationTokenOnDestroy());
     }
 
     // ========================= [2. 퇴장 (Exit)] =========================
-    public void RemoveCharacter(string characterName, EntranceType exitTo)
+    public void RemoveCharacter(string characterName, string exitTo)
     {
-        EnqueueAction(characterName, ExitRoutine(characterName, exitTo));
+        EnqueueAction(characterName, (isImmediate) => ExitAsync(characterName, GetDirectionType(exitTo), isImmediate));
     }
 
-    private IEnumerator ExitRoutine(string characterName, EntranceType exitTo)
+    private async UniTask ExitAsync(string characterName, DirectionType exitTo, bool isImmediate)
     {
         Transform targetSlot = FindSlot(characterName);
 
         if (targetSlot == null)
         {
             Debug.LogWarning($"삭제 실패: '{characterName}' 캐릭터를 찾을 수 없습니다.");
-            yield break;
+            return;
         }
 
         // 중복 호출 방지를 위해 이름을 바꿔둠
         targetSlot.name += "_Removing";
 
         LayoutElement layoutElement = targetSlot.GetComponent<LayoutElement>();
-
-        // [변경] 계층 구조 반영
         Transform container = targetSlot.GetChild(0); // MotionContainer
         RectTransform containerRect = container.GetComponent<RectTransform>();
         Image charImage = container.GetChild(0).GetComponent<Image>(); // Image
 
         Vector2 targetPos = GetDirectionVector(exitTo);
+        float duration = isImmediate ? 0f : defaultDuration;
 
-        switch (exitTo)
+        if (exitTo == DirectionType.RunLeft || exitTo == DirectionType.RunRight)
         {
-            case EntranceType.LeftRun:
-            case EntranceType.RightRun:
-                StartCoroutine(PlayActionRoutine(targetSlot, ActionType.Run));
-                break;
+            PlayActionAsync(targetSlot, AnimationType.Run, isImmediate).Forget();
         }
 
         // 이미지 날리기 & 투명화 & 공간 닫기 (동시 실행 및 대기)
-        yield return Sequence.Create()
-            .Group(Tween.UIAnchoredPosition(containerRect, targetPos, defaultDuration, Ease.OutQuart))
-            .Group(Tween.Alpha(charImage, 0f, defaultDuration * 0.8f))
-            .Group(Tween.Custom(layoutElement, layoutElement.preferredWidth, 0f, defaultDuration, (t, x) => t.preferredWidth = x, Ease.OutQuart))
-            .ToYieldInstruction();
+        await Sequence.Create()
+            .Group(Tween.UIAnchoredPosition(containerRect, targetPos, duration, Ease.OutQuart))
+            .Group(Tween.Alpha(charImage, 0f, duration * 0.8f))
+            .Group(Tween.Custom(layoutElement, layoutElement.preferredWidth, 0f, duration, (t, x) => t.preferredWidth = x, Ease.OutQuart))
+            .ToUniTask(cancellationToken: this.GetCancellationTokenOnDestroy());
 
         Destroy(targetSlot.gameObject);
     }
 
     // ========================= [3. 액션 (Action)] =========================
-    public void PlayAction(string characterName, ActionType action)
+    public void PlayAction(string characterName, string action)
     {
-        EnqueueAction(characterName, PlayActionRoutine(characterName, action));
+        EnqueueAction(characterName, (isImmediate) => PlayActionAsync(characterName, GetAnimationType(action), isImmediate));
     }
 
-    private IEnumerator PlayActionRoutine(string characterName, ActionType action)
+    private async UniTask PlayActionAsync(string characterName, AnimationType action, bool isImmediate)
     {
         Transform targetSlot = FindSlot(characterName);
 
         if (targetSlot == null)
         {
             Debug.LogWarning($"액션 실패: '{characterName}' 캐릭터를 찾을 수 없습니다.");
-            yield break;
+            return;
         }
 
-        yield return PlayActionRoutine(targetSlot, action);
+        await PlayActionAsync(targetSlot, action, isImmediate);
     }
 
-    private IEnumerator PlayActionRoutine(Transform targetSlot, ActionType action)
+    private async UniTask PlayActionAsync(Transform targetSlot, AnimationType action, bool isImmediate)
     {
         // [변경] 계층 구조 반영: Slot -> Container -> Image
         // 액션은 Image에만 적용 (Container는 이동 담당)
@@ -274,111 +226,81 @@ public class VNDirector : MonoBehaviour
         Tween.StopAll(targetImageRect);
         targetImageRect.anchoredPosition = Vector2.zero;
 
+        if (isImmediate) return; // 즉시 실행 시 애니메이션 스킵
+
         Tween actionTween = default;
         Sequence actionSequence = default;
         bool isSequence = false;
 
         switch (action)
         {
-            case ActionType.Jump:
+            case AnimationType.Jump:
                 actionTween = Tween.PunchLocalPosition(targetImageRect, new Vector3(0, 100f, 0), 0.5f, frequency: 2);
                 break;
 
-            case ActionType.Shake:
+            case AnimationType.Shake:
                 actionTween = Tween.ShakeLocalPosition(targetImageRect, new Vector3(50f, 0, 0), 0.5f, frequency: 10);
                 break;
 
-            case ActionType.Run:
+            case AnimationType.Run:
                 actionTween = Tween.PunchLocalPosition(targetImageRect, new Vector3(0, 50f, 0), 0.5f, frequency: 10);
                 break;
 
-            case ActionType.Nod:
+            case AnimationType.Nod:
                 isSequence = true;
                 actionSequence = Sequence.Create()
                     .Chain(Tween.UIAnchoredPositionY(targetImageRect, -30f, 0.15f, Ease.OutQuad))
                     .Chain(Tween.UIAnchoredPositionY(targetImageRect, 0f, 0.15f, Ease.InQuad));
                 break;
 
-            case ActionType.Punch:
+            case AnimationType.Punch:
                 actionTween = Tween.PunchScale(targetImageRect, new Vector3(0.2f, 0.2f, 0), 0.4f, frequency: 1);
                 break;
         }
 
         if (isSequence)
         {
-            if (actionSequence.isAlive) yield return actionSequence.ToYieldInstruction();
+            if (actionSequence.isAlive) await actionSequence.ToUniTask(cancellationToken: this.GetCancellationTokenOnDestroy());
         }
         else
         {
-            if (actionTween.isAlive) yield return actionTween.ToYieldInstruction();
+            if (actionTween.isAlive) await actionTween.ToUniTask(cancellationToken: this.GetCancellationTokenOnDestroy());
         }
     }
 
     // ========================= [4. 표정 변경 (Change Expression)] =========================
     public void ChangeExpression(string characterName, string spriteName)
     {
-        EnqueueAction(characterName, ChangeExpressionRoutine(characterName, spriteName));
+        EnqueueAction(characterName, (isImmediate) => ChangeExpressionAsync(characterName, spriteName, isImmediate));
     }
 
-    private IEnumerator ChangeExpressionRoutine(string characterName, string spriteName)
+    private async UniTask ChangeExpressionAsync(string characterName, string spriteName, bool isImmediate)
     {
         Transform targetSlot = FindSlot(characterName);
-        if (targetSlot == null) yield break;
+        if (targetSlot == null) return;
 
-        // [변경] 계층 구조 반영
         Image charImage = targetSlot.GetChild(0).GetChild(0).GetComponent<Image>();
-        Sprite newSprite = Resources.Load<Sprite>("Images/Characters/" + spriteName);
+        Sprite newSprite = Resources.Load<Sprite>(CharacterPathPrefix + spriteName);
 
         if (newSprite != null)
         {
-            // 1. 마스크 컨테이너 생성
-            GameObject maskObj = new("MaskContainer");
-            maskObj.transform.SetParent(charImage.transform, false); // [변경] 부모를 이미지로 설정하여 액션(Scale/Move) 동기화
+            if (isImmediate)
+            {
+                charImage.sprite = newSprite;
+                FitImageToScreen(charImage);
+                return;
+            }
 
-            RectTransform maskRect = maskObj.AddComponent<RectTransform>();
-            maskRect.anchorMin = new Vector2(0.5f, 1f); // Top Center
-            maskRect.anchorMax = new Vector2(0.5f, 1f);
-            maskRect.pivot = new Vector2(0.5f, 1f);
-
-            // 마스크 영역을 위로 올려서 상단 Softness가 이미지에 영향을 주지 않도록 함
-            float softnessOffset = 100f;
-            float currentWidth = charImage.rectTransform.rect.width; // [변경] 실제 이미지 너비 사용
-            maskRect.anchoredPosition = new Vector2(0, softnessOffset);
-            maskRect.sizeDelta = new Vector2(currentWidth, 0); // 너비는 캐릭터 폭, 높이는 0부터 시작
-
-            RectMask2D rectMask = maskObj.AddComponent<RectMask2D>();
-            rectMask.softness = new Vector2Int(0, (int)softnessOffset); // 세로 방향 Softness 설정
-
-            // 2. 오버레이 이미지 생성
-            GameObject overlayObj = new("ExpressionOverlay");
-            overlayObj.transform.SetParent(maskObj.transform, false);
-
-            Image overlayImage = overlayObj.AddComponent<Image>();
-            overlayImage.sprite = newSprite;
-            overlayImage.color = charImage.color;
-            overlayImage.material = charImage.material;
-            overlayImage.raycastTarget = charImage.raycastTarget;
-            overlayImage.type = Image.Type.Simple;
-            overlayImage.preserveAspect = true;
-
-            // 오버레이 위치 보정 (마스크가 올라간 만큼 내려줌)
-            RectTransform overlayRect = overlayImage.rectTransform;
-            overlayRect.anchorMin = new Vector2(0.5f, 1f);
-            overlayRect.anchorMax = new Vector2(0.5f, 1f);
-            overlayRect.pivot = new Vector2(0.5f, 1f);
-            overlayRect.anchoredPosition = new Vector2(0, -softnessOffset); // 원위치 유지
-
-            FitImageToScreen(overlayImage);
-
-            // 렌더링 순서 보장 (마스크 컨테이너를 가장 앞으로)
-            maskObj.transform.SetAsLastSibling();
+            // 마스크 및 오버레이 설정
+            var (maskObj, maskRect, overlayRect) = SetupMaskAndOverlay(charImage, newSprite);
 
             // 3. 애니메이션 실행 (마스크 높이를 키워서 이미지를 드러냄)
-            // 목표 높이: 캐릭터 이미지 높이 + 오프셋
+            float softnessOffset = 100f;
             float targetHeight = overlayRect.sizeDelta.y + softnessOffset;
+            float currentWidth = charImage.rectTransform.rect.width;
 
-            yield return Tween.UISizeDelta(maskRect, new Vector2(currentWidth, targetHeight), 0.5f, Ease.OutQuart)
-                .ToYieldInstruction();
+            await Tween.UISizeDelta(maskRect, new Vector2(currentWidth, targetHeight), 0.5f, Ease.OutQuart)
+                .ToUniTask(cancellationToken: this.GetCancellationTokenOnDestroy());
 
             // 원본 교체 및 정리
             charImage.sprite = newSprite;
@@ -392,21 +314,124 @@ public class VNDirector : MonoBehaviour
         }
     }
 
-    // [Helper] 이름으로 슬롯 찾기
+    // ========================= [Helpers] =========================
+
+    private (GameObject slot, LayoutElement layout, RectTransform container, Image image) CreateCharacterSlot(string name)
+    {
+        GameObject newSlot = new GameObject(name);
+        newSlot.transform.SetParent(characterPanel, false);
+
+        LayoutElement layoutElement = newSlot.AddComponent<LayoutElement>();
+
+        GameObject motionContainer = new("MotionContainer");
+        RectTransform containerRect = motionContainer.AddComponent<RectTransform>();
+        motionContainer.transform.SetParent(newSlot.transform, false);
+
+        containerRect.anchorMin = Vector2.zero;
+        containerRect.anchorMax = Vector2.one;
+        containerRect.sizeDelta = Vector2.zero;
+
+        GameObject imageObj = new GameObject("Image");
+        imageObj.transform.SetParent(motionContainer.transform, false);
+
+        Image charImage = imageObj.AddComponent<Image>();
+
+        return (newSlot, layoutElement, containerRect, charImage);
+    }
+
+    private (GameObject maskObj, RectTransform maskRect, RectTransform overlayRect) SetupMaskAndOverlay(Image charImage, Sprite newSprite)
+    {
+        GameObject maskObj = new("MaskContainer");
+        maskObj.transform.SetParent(charImage.transform, false);
+
+        RectTransform maskRect = maskObj.AddComponent<RectTransform>();
+        maskRect.anchorMin = new Vector2(0.5f, 1f); // Top Center
+        maskRect.anchorMax = new Vector2(0.5f, 1f);
+        maskRect.pivot = new Vector2(0.5f, 1f);
+
+        float softnessOffset = 100f;
+        float currentWidth = charImage.rectTransform.rect.width;
+        maskRect.anchoredPosition = new Vector2(0, softnessOffset);
+        maskRect.sizeDelta = new Vector2(currentWidth, 0);
+
+        RectMask2D rectMask = maskObj.AddComponent<RectMask2D>();
+        rectMask.softness = new Vector2Int(0, (int)softnessOffset);
+
+        GameObject overlayObj = new("ExpressionOverlay");
+        overlayObj.transform.SetParent(maskObj.transform, false);
+
+        Image overlayImage = overlayObj.AddComponent<Image>();
+        overlayImage.sprite = newSprite;
+        overlayImage.color = charImage.color;
+        overlayImage.material = charImage.material;
+        overlayImage.raycastTarget = charImage.raycastTarget;
+        overlayImage.type = Image.Type.Simple;
+        overlayImage.preserveAspect = true;
+
+        RectTransform overlayRect = overlayImage.rectTransform;
+        overlayRect.anchorMin = new Vector2(0.5f, 1f);
+        overlayRect.anchorMax = new Vector2(0.5f, 1f);
+        overlayRect.pivot = new Vector2(0.5f, 1f);
+        overlayRect.anchoredPosition = new Vector2(0, -softnessOffset);
+
+        FitImageToScreen(overlayImage);
+
+        maskObj.transform.SetAsLastSibling();
+
+        return (maskObj, maskRect, overlayRect);
+    }
+
+    private void ArrangeSlotOrder(Transform slotTransform, DirectionType type)
+    {
+        int totalCount = characterPanel.childCount;
+        switch (type)
+        {
+            case DirectionType.Left:
+            case DirectionType.RunLeft:
+            case DirectionType.BottomLeft:
+                slotTransform.SetSiblingIndex(0); break;
+            case DirectionType.Right:
+            case DirectionType.RunRight:
+            case DirectionType.BottomRight:
+                slotTransform.SetSiblingIndex(totalCount - 1); break;
+            case DirectionType.Center:
+            case DirectionType.Top:
+                List<Transform> activeChildren = new();
+                for (int i = 0; i < totalCount; i++)
+                {
+                    Transform child = characterPanel.GetChild(i);
+                    if (child != slotTransform && !child.name.Contains("_Removing"))
+                    {
+                        activeChildren.Add(child);
+                    }
+                }
+
+                int targetIndex = activeChildren.Count / 2;
+                if (targetIndex < activeChildren.Count)
+                {
+                    slotTransform.SetSiblingIndex(activeChildren[targetIndex].GetSiblingIndex());
+                }
+                else
+                {
+                    slotTransform.SetSiblingIndex(totalCount - 1);
+                }
+                break;
+        }
+    }
+
     private Transform FindSlot(string name)
     {
-        // CharacterPanel 바로 아래 자식들 중에서 이름을 검색
         return characterPanel.Find(name);
     }
 
-    private Vector2 GetDirectionVector(EntranceType type)
+    private Vector2 GetDirectionVector(DirectionType type)
     {
         return type switch
         {
-            EntranceType.Left or EntranceType.LeftRun => new Vector2(-moveDistance, 0),
-            EntranceType.Right or EntranceType.RightRun => new Vector2(moveDistance, 0),
-            EntranceType.Center or EntranceType.BottomLeft or EntranceType.BottomRight => new Vector2(0, -moveDistance),
-            EntranceType.Top => new Vector2(0, moveDistance),
+            DirectionType.Left or DirectionType.RunLeft => new Vector2(-moveDistance, 0),
+            DirectionType.Right or DirectionType.RunRight => new Vector2(moveDistance, 0),
+            DirectionType.Center or DirectionType.BottomLeft or DirectionType.BottomRight => new Vector2(0, -moveDistance),
+            DirectionType.Top => new Vector2(0, moveDistance),
             _ => Vector2.zero,
         };
     }
@@ -415,12 +440,7 @@ public class VNDirector : MonoBehaviour
     {
         image.SetNativeSize();
 
-        Canvas rootCanvas = GetComponentInParent<Canvas>();
-        if (rootCanvas == null) return;
-
-        RectTransform canvasRect = rootCanvas.GetComponent<RectTransform>();
-        // 화면 높이의 95%를 넘지 않도록 설정
-        float maxHeight = canvasRect.rect.height * 0.95f;
+        float maxHeight = Screen.height * 0.95f;
 
         if (image.rectTransform.rect.height > maxHeight)
         {
@@ -430,5 +450,32 @@ public class VNDirector : MonoBehaviour
 
             image.rectTransform.sizeDelta = new Vector2(newWidth, newHeight);
         }
+    }
+
+    private AnimationType GetAnimationType(string str)
+    {
+        return str switch
+        {
+            "jump" => AnimationType.Jump,
+            "shake" => AnimationType.Shake,
+            "run" => AnimationType.Run,
+            "nod" => AnimationType.Nod,
+            "punch" => AnimationType.Punch
+        };
+    }
+
+    private DirectionType GetDirectionType(string str)
+    {
+        return str switch
+        {
+            "left" => DirectionType.Left,
+            "right" => DirectionType.Right,
+            "center" => DirectionType.Center,
+            "bottomleft" => DirectionType.BottomLeft,
+            "bottomright" => DirectionType.BottomRight,
+            "top" => DirectionType.Top,
+            "runleft" => DirectionType.RunLeft,
+            "runright" => DirectionType.RunRight
+        };
     }
 }

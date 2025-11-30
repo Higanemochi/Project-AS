@@ -26,10 +26,9 @@ public class VNManager : MonoBehaviour
     float charsPerSecond = 45f;
 
     public VNDirector director;
-    private readonly float shakeAmount = 1.1f;
     private bool isChoiceAvailable = false;
     private Tween dialogueTween;
-    private Command _currentScript;
+    private Script _currentScript;
 
     public static string NextScriptPath = "";
 
@@ -81,9 +80,9 @@ public class VNManager : MonoBehaviour
 
     private void NextStep()
     {
-        if (_currentScript.HasNextAction())
+        if (_currentScript.HasNextCommand())
         {
-            CommandSet command = _currentScript.Continue();
+            Command command = _currentScript.Continue();
             Execute(command);
             return;
         }
@@ -91,7 +90,7 @@ public class VNManager : MonoBehaviour
         Debug.Log("ScriptManager :: End of Script");
     }
 
-    private void Execute(CommandSet command)
+    private void Execute(Command command)
     {
         if (command.Type == "label")
         {
@@ -111,19 +110,10 @@ public class VNManager : MonoBehaviour
         {
             string charFile = command.GetParam("img");
             if (string.IsNullOrEmpty(charFile))
-            {
                 charFile = command.GetParam("target");
-            }
-            string charEntrance = command.GetParam("enter");
-            if (charEntrance == "") charEntrance = "center";
-            if (charEntrance.ToLower() == "center") director.AddCharacter(charFile, VNDirector.EntranceType.Center);
-            if (charEntrance.ToLower() == "top") director.AddCharacter(charFile, VNDirector.EntranceType.Top);
-            if (charEntrance.ToLower() == "left") director.AddCharacter(charFile, VNDirector.EntranceType.Left);
-            if (charEntrance.ToLower() == "right") director.AddCharacter(charFile, VNDirector.EntranceType.Right);
-            if (charEntrance.ToLower() == "bottomleft") director.AddCharacter(charFile, VNDirector.EntranceType.BottomLeft);
-            if (charEntrance.ToLower() == "bottomright") director.AddCharacter(charFile, VNDirector.EntranceType.BottomRight);
-            if (charEntrance.ToLower() == "leftrun") director.AddCharacter(charFile, VNDirector.EntranceType.LeftRun);
-            if (charEntrance.ToLower() == "rightrun") director.AddCharacter(charFile, VNDirector.EntranceType.RightRun);
+
+            string direction = command.GetParam("enter").ToLower();
+            director.AddCharacter(charFile, direction);
             Debug.Log($"ScriptManager :: Character: {charFile}");
             NextStep();
             return;
@@ -131,34 +121,18 @@ public class VNManager : MonoBehaviour
         if (command.Type == "remove")
         {
             string charName = command.GetParam("target");
-            string exitType = command.GetParam("exit");
-            if (exitType == "") exitType = "center";
+            string direction = command.GetParam("exit").ToLower();
 
-            VNDirector.EntranceType type = new();
-            if (exitType.ToLower() == "center") type = VNDirector.EntranceType.Center;
-            if (exitType.ToLower() == "left") type = VNDirector.EntranceType.Left;
-            if (exitType.ToLower() == "right") type = VNDirector.EntranceType.Right;
-            if (exitType.ToLower() == "bottomleft") type = VNDirector.EntranceType.BottomLeft;
-            if (exitType.ToLower() == "bottomright") type = VNDirector.EntranceType.BottomRight;
-            if (exitType.ToLower() == "top") type = VNDirector.EntranceType.Top;
-            if (exitType.ToLower() == "leftrun") type = VNDirector.EntranceType.LeftRun;
-            if (exitType.ToLower() == "rightrun") type = VNDirector.EntranceType.RightRun;
-
-            director.RemoveCharacter(charName, type);
-            Debug.Log($"ScriptManager :: Remove Character: {charName} to {exitType}");
+            director.RemoveCharacter(charName, direction);
+            Debug.Log($"ScriptManager :: Remove Character: {charName} to {direction}");
             NextStep();
             return;
         }
         if (command.Type == "action")
         {
             string charName = command.GetParam("target");
-            string charAnim = command.GetParam("anim");
-            if (charAnim == "") charAnim = "center";
-            if (charAnim.ToLower() == "jump") director.PlayAction(charName, VNDirector.ActionType.Jump);
-            if (charAnim.ToLower() == "shake") director.PlayAction(charName, VNDirector.ActionType.Shake);
-            if (charAnim.ToLower() == "run") director.PlayAction(charName, VNDirector.ActionType.Run);
-            if (charAnim.ToLower() == "nod") director.PlayAction(charName, VNDirector.ActionType.Nod);
-            if (charAnim.ToLower() == "punch") director.PlayAction(charName, VNDirector.ActionType.Punch);
+            string charAnim = command.GetParam("anim").ToLower();
+            director.PlayAction(charName, charAnim);
             Debug.Log($"ScriptManager :: Action: {charName} {charAnim}");
             NextStep();
             return;
@@ -272,6 +246,33 @@ public class VNManager : MonoBehaviour
         }
     }
 
+    private VNDirector.AnimationType GetAnimationType(string str)
+    {
+        return str switch
+        {
+            "jump" => VNDirector.AnimationType.Jump,
+            "shake" => VNDirector.AnimationType.Shake,
+            "run" => VNDirector.AnimationType.Run,
+            "nod" => VNDirector.AnimationType.Nod,
+            "punch" => VNDirector.AnimationType.Punch
+        };
+    }
+
+    private VNDirector.DirectionType GetDirectionType(string str)
+    {
+        return str switch
+        {
+            "left" => VNDirector.DirectionType.Left,
+            "right" => VNDirector.DirectionType.Right,
+            "center" => VNDirector.DirectionType.Center,
+            "bottomleft" => VNDirector.DirectionType.BottomLeft,
+            "bottomright" => VNDirector.DirectionType.BottomRight,
+            "top" => VNDirector.DirectionType.Top,
+            "runleft" => VNDirector.DirectionType.RunLeft,
+            "runright" => VNDirector.DirectionType.RunRight
+        };
+    }
+
     public void DebugReload()
     {
         speakerText.SetText(" ");
@@ -342,10 +343,7 @@ public class VNManager : MonoBehaviour
 
                 if (linkName == "shake")
                 {
-                    Vector3 offset = new(
-                        Random.Range(-shakeAmount, shakeAmount),
-                        Random.Range(-shakeAmount, shakeAmount)
-                    );
+                    Vector3 offset = new(Random.Range(-1.1f, 1.1f), Random.Range(-1.1f, 1.1f));
                     for (byte j = 0; j < 4; j++)
                         vertices[idx + j] += offset;
                 }
