@@ -9,7 +9,7 @@ public class Command
 
     public string GetParam(string key, string defaultValue = "")
     {
-        return Params.ContainsKey(key) ? Params[key].ToString() : defaultValue;
+        return Params.TryGetValue(key, out var val) ? val.ToString() : defaultValue;
     }
 }
 public class Script

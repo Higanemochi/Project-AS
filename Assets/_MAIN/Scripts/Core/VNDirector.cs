@@ -8,10 +8,6 @@ using UnityEngine.UI;
 
 public class VNDirector : MonoBehaviour
 {
-    // ========================= [Enums] =========================
-    public enum DirectionType { Left, Right, BottomLeft, BottomRight, Center, Top, RunLeft, RunRight }
-    public enum AnimationType { Jump, Shake, Nod, Punch, Run }
-
     [Header("UI 연결")]
     public Transform characterPanel;
 
@@ -460,7 +456,8 @@ public class VNDirector : MonoBehaviour
             "shake" => AnimationType.Shake,
             "run" => AnimationType.Run,
             "nod" => AnimationType.Nod,
-            "punch" => AnimationType.Punch
+            "punch" => AnimationType.Punch,
+            _ => AnimationType.Nod
         };
     }
 
@@ -475,7 +472,8 @@ public class VNDirector : MonoBehaviour
             "bottomright" => DirectionType.BottomRight,
             "top" => DirectionType.Top,
             "runleft" => DirectionType.RunLeft,
-            "runright" => DirectionType.RunRight
+            "runright" => DirectionType.RunRight,
+            _ => DirectionType.Center
         };
     }
 }

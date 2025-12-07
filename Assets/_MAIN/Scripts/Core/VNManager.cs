@@ -92,185 +92,123 @@ public class VNManager : MonoBehaviour
 
     private void Execute(Command command)
     {
-        if (command.Type == "label")
+        switch (command.Type)
         {
-            string labelName = command.GetParam("content");
-            Debug.Log($"ScriptManager :: Change Label: {labelName}");
-            NextStep();
-            return;
-        }
-        if (command.Type == "bg")
-        {
-            string bgFile = command.GetParam("file");
-            Debug.Log($"ScriptManager :: Change Background: {bgFile}");
-            NextStep();
-            return;
-        }
-        if (command.Type == "char")
-        {
-            string charFile = command.GetParam("img");
-            if (string.IsNullOrEmpty(charFile))
-                charFile = command.GetParam("target");
-
-            string direction = command.GetParam("enter").ToLower();
-            director.AddCharacter(charFile, direction);
-            Debug.Log($"ScriptManager :: Character: {charFile}");
-            NextStep();
-            return;
-        }
-        if (command.Type == "remove")
-        {
-            string charName = command.GetParam("target");
-            string direction = command.GetParam("exit").ToLower();
-
-            director.RemoveCharacter(charName, direction);
-            Debug.Log($"ScriptManager :: Remove Character: {charName} to {direction}");
-            NextStep();
-            return;
-        }
-        if (command.Type == "action")
-        {
-            string charName = command.GetParam("target");
-            string charAnim = command.GetParam("anim").ToLower();
-            director.PlayAction(charName, charAnim);
-            Debug.Log($"ScriptManager :: Action: {charName} {charAnim}");
-            NextStep();
-            return;
-        }
-        if (command.Type == "expr")
-        {
-            string charName = command.GetParam("target");
-            string charExpr = command.GetParam("expr");
-            director.ChangeExpression(charName, charExpr);
-            Debug.Log($"ScriptManager :: Expression: {charName} {charExpr}");
-            NextStep();
-            return;
-        }
-        if (command.Type == "spk")
-        {
-            string speaker = command.GetParam("name");
-            if (speakerSprite.activeSelf == false)
-                speakerSprite.SetActive(true);
-            if (speaker == "")
-                speakerSprite.SetActive(false);
-
-            speaker = Store.Instance.ReplaceVariables(speaker);
-            Debug.Log($"ScriptManager :: Speaker: {speaker}");
-            speakerText.SetText(speaker);
-            speakerText.ForceMeshUpdate(true);
-            NextStep();
-            return;
-        }
-        if (command.Type == "msg")
-        {
-            string dialogue = command.GetParam("content");
-            dialogue = Store.Instance.ReplaceVariables(dialogue);
-
-
-            DisplayDialogue(dialogue);
-
-            if (_currentScript.PeekNext()?.Type == "choices")
-            {
+            case "label":
+                Debug.Log($"ScriptManager :: Change Label: {command.GetParam("content")}");
                 NextStep();
-            }
-            return;
+                return;
+            case "bg":
+                Debug.Log($"ScriptManager :: Change Background: {command.GetParam("file")}");
+                NextStep();
+                return;
+            case "char":
+                director.AddCharacter(command.GetParam("img"), command.GetParam("enter").ToLower());
+                Debug.Log($"ScriptManager :: Character: {command.GetParam("img")}");
+                NextStep();
+                return;
+            case "remove":
+                director.RemoveCharacter(command.GetParam("target"), command.GetParam("exit").ToLower());
+                Debug.Log($"ScriptManager :: Remove Character: {command.GetParam("target")} to {command.GetParam("exit").ToLower()}");
+                NextStep();
+                return;
+            case "action":
+                director.PlayAction(command.GetParam("target"), command.GetParam("anim").ToLower());
+                Debug.Log($"ScriptManager :: Action: {command.GetParam("target")} {command.GetParam("anim").ToLower()}");
+                NextStep();
+                return;
+            case "expr":
+                director.ChangeExpression(command.GetParam("target"), command.GetParam("expr").ToLower());
+                Debug.Log($"ScriptManager :: Expression: {command.GetParam("target")} {command.GetParam("expr").ToLower()}");
+                NextStep();
+                return;
+            case "spk":
+                if (speakerSprite.activeSelf == false)
+                    speakerSprite.SetActive(true);
+                if (command.GetParam("name") == "")
+                    speakerSprite.SetActive(false);
+
+                string speaker = Store.Instance.ReplaceVariables(command.GetParam("name"));
+                Debug.Log($"ScriptManager :: Speaker: {speaker}");
+                speakerText.SetText(speaker);
+                speakerText.ForceMeshUpdate(true);
+                NextStep();
+                return;
+            case "msg":
+                string dialogue = command.GetParam("content");
+                dialogue = Store.Instance.ReplaceVariables(dialogue);
+
+                DisplayDialogue(dialogue);
+
+                if (_currentScript.PeekNext()?.Type == "choices")
+                {
+                    NextStep();
+                }
+                return;
+            case "goto":
+                string targetLabel = command.GetParam("content");
+                _currentScript.JumpTo(targetLabel);
+                NextStep();
+                return;
+            case "choices":
+                Debug.Log("ScriptManager :: Show Choices");
+                isChoiceAvailable = true;
+
+                // WTF.. is this shit
+                Color tempColor = choiceBackground.color;
+                tempColor.a = 0.8f;
+                choiceBackground.color = tempColor;
+
+                foreach (var choice in command.Choices)
+                {
+                    string text = Store.Instance.ReplaceVariables(choice["content"]);
+                    string target = choice["goto"];
+                    GameObject buttonObj = Instantiate(choiceButtonPrefab, choiceButtonContainer);
+                    buttonObj.GetComponentInChildren<TextMeshProUGUI>().text = text;
+                    buttonObj
+                        .GetComponent<Button>()
+                        .onClick.AddListener(() =>
+                        {
+                            foreach (Transform child in choiceButtonContainer)
+                                Destroy(child.gameObject);
+                            isChoiceAvailable = false;
+
+                            // shitty code
+                            tempColor.a = 0f;
+                            choiceBackground.color = tempColor;
+
+                            _currentScript.JumpTo(target);
+                            NextStep();
+                        });
+                }
+                return;
+            case "var":
+                foreach (var entry in command.Params)
+                {
+                    Store.Instance.SetVariable(entry.Key, entry.Value.ToString());
+                }
+                NextStep();
+                return;
+            case "add":
+                foreach (var entry in command.Params)
+                {
+                    Store.Instance.AddVariable(entry.Key, entry.Value.ToString());
+                }
+                NextStep();
+                return;
+            case "scene":
+                string sceneName = command.GetParam("file");
+                string nextScript = command.GetParam("script");
+                Debug.Log($"ScriptManager :: Load Scene: {sceneName}, Next Script: {nextScript}");
+
+                NextScriptPath = nextScript;
+                SceneManager.LoadScene(sceneName);
+                return;
+            default:
+                Debug.LogWarning($"ScriptManager :: Unknown command: {command.Type}");
+                NextStep();
+                return;
         }
-        if (command.Type == "goto")
-        {
-            string targetLabel = command.GetParam("content");
-            _currentScript.JumpTo(targetLabel);
-            NextStep();
-            return;
-        }
-        if (command.Type == "choices")
-        {
-            Debug.Log("ScriptManager :: Show Choices");
-            isChoiceAvailable = true;
-
-            // WTF.. is this shit
-            Color tempColor = choiceBackground.color;
-            tempColor.a = 0.8f;
-            choiceBackground.color = tempColor;
-
-            foreach (var choice in command.Choices)
-            {
-                string text = Store.Instance.ReplaceVariables(choice["content"]);
-                string target = choice["goto"];
-                GameObject buttonObj = Instantiate(choiceButtonPrefab, choiceButtonContainer);
-                buttonObj.GetComponentInChildren<TextMeshProUGUI>().text = text;
-                buttonObj
-                    .GetComponent<Button>()
-                    .onClick.AddListener(() =>
-                    {
-                        foreach (Transform child in choiceButtonContainer)
-                            Destroy(child.gameObject);
-                        isChoiceAvailable = false;
-
-                        // shitty code
-                        tempColor.a = 0f;
-                        choiceBackground.color = tempColor;
-
-                        _currentScript.JumpTo(target);
-                        NextStep();
-                    });
-            }
-            return;
-        }
-        if (command.Type == "var")
-        {
-            foreach (var entry in command.Params)
-            {
-                Store.Instance.SetVariable(entry.Key, entry.Value.ToString());
-            }
-            NextStep();
-            return;
-        }
-        if (command.Type == "add")
-        {
-            foreach (var entry in command.Params)
-            {
-                Store.Instance.AddVariable(entry.Key, entry.Value.ToString());
-            }
-            NextStep();
-            return;
-        }
-        if (command.Type == "scene")
-        {
-            string sceneName = command.GetParam("file");
-            string nextScript = command.GetParam("script");
-            Debug.Log($"ScriptManager :: Load Scene: {sceneName}, Next Script: {nextScript}");
-
-            NextScriptPath = nextScript;
-            SceneManager.LoadScene(sceneName);
-            return;
-        }
-    }
-
-    private VNDirector.AnimationType GetAnimationType(string str)
-    {
-        return str switch
-        {
-            "jump" => VNDirector.AnimationType.Jump,
-            "shake" => VNDirector.AnimationType.Shake,
-            "run" => VNDirector.AnimationType.Run,
-            "nod" => VNDirector.AnimationType.Nod,
-            "punch" => VNDirector.AnimationType.Punch
-        };
-    }
-
-    private VNDirector.DirectionType GetDirectionType(string str)
-    {
-        return str switch
-        {
-            "left" => VNDirector.DirectionType.Left,
-            "right" => VNDirector.DirectionType.Right,
-            "center" => VNDirector.DirectionType.Center,
-            "bottomleft" => VNDirector.DirectionType.BottomLeft,
-            "bottomright" => VNDirector.DirectionType.BottomRight,
-            "top" => VNDirector.DirectionType.Top,
-            "runleft" => VNDirector.DirectionType.RunLeft,
-            "runright" => VNDirector.DirectionType.RunRight
-        };
     }
 
     public void DebugReload()
@@ -315,6 +253,11 @@ public class VNManager : MonoBehaviour
             onValueChange: x => dialogueText.maxVisibleCharacters = Mathf.RoundToInt(x),
             ease: Ease.Linear
         );
+    }
+
+    public bool IsDialoguePlaying()
+    {
+        return dialogueTween.isAlive;
     }
 
     private void DisplayEffects(TextMeshProUGUI text)
