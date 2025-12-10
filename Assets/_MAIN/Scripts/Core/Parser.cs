@@ -1,13 +1,28 @@
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 
-public class Parser
+/// <summary>파싱된 스크립트 명령</summary>
+public class Command
+{
+    public string Type { get; set; }
+    public Dictionary<string, object> Params { get; set; } = new();
+    public List<Dictionary<string, string>> Choices { get; set; }
+
+    public string GetParam(string key, string defaultValue = "")
+    {
+        return Params.TryGetValue(key, out var val) ? val.ToString() : defaultValue;
+    }
+}
+
+/// <summary>스크립트 텍스트를 Command 리스트로 파싱</summary>
+public static class Parser
 {
     private static readonly Regex TagRegex = new(@"^\[(\w+)(?:\s+(.*))?\]$");
     private static readonly Regex AttrRegex = new(@"(\w+)=(""[^""]*""|'[^']*'|[^ \t\]]+)");
     private static readonly Regex ChoiceRegex = new(@"^\*\s*(.+?)\s*>\s*(.+)$");
 
-    public static Script Parse(string text)
+    /// <summary>스크립트 텍스트를 파싱하여 (Commands, LabelMap) 튜플 반환</summary>
+    public static (List<Command> Commands, Dictionary<string, int> LabelMap) Parse(string text)
     {
         List<Command> commands = new();
         Dictionary<string, int> labelMap = new();
@@ -73,7 +88,7 @@ public class Parser
             commands.Add(new Command { Type = "msg", Params = { { "content", line } } });
         }
 
-        return new Script(commands, labelMap);
+        return (commands, labelMap);
     }
 
     private static void ParseAttributes(string attrString, Dictionary<string, object> paramDict)

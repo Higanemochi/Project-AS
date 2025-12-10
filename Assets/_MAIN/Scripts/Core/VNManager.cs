@@ -1,224 +1,152 @@
 using System.Collections.Generic;
-using PrimeTween;
-using TMPro;
+using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.EventSystems;
-using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 public class VNManager : MonoBehaviour
 {
     [SerializeField]
-    TextAsset scriptFile;
+    private TextAsset _scriptFile;
     [SerializeField]
-    TextMeshProUGUI speakerText;
+    private DialogueDrawer _dialogueDrawer;
     [SerializeField]
-    GameObject speakerSprite;
+    private ChoiceDrawer _choiceDrawer;
     [SerializeField]
-    TextMeshProUGUI dialogueText;
-    [SerializeField]
-    private GameObject choiceButtonPrefab;
-    [SerializeField]
-    private Transform choiceButtonContainer;
-    [SerializeField]
-    private Image choiceBackground;
-    [SerializeField]
-    float charsPerSecond = 45f;
+    private CharacterDrawer _characterDrawer;
 
-    public VNDirector director;
-    private bool isChoiceAvailable = false;
-    private Tween dialogueTween;
-    private Script _currentScript;
 
-    public static string NextScriptPath = "";
+    // Stores
+    private DialogueStore _dialogueStore;
+    private ChoiceStore _choiceStore;
+    private CharacterStore _characterStore;
+    private FlowStore _flowStore;
+    private VariableStore _variableStore;
 
-    void Start()
+    // 컴파일된 스크립트
+    private ScriptAction[] _actions;
+    private ScriptContext _context;
+    private int _currentIndex = 0;
+    private bool _inputReceived = false;
+
+    private void Awake()
     {
-        speakerText.SetText(" ");
-        speakerText.ForceMeshUpdate(true);
-        dialogueText.SetText(" ");
-        dialogueText.ForceMeshUpdate(true);
+        // Store 초기화
+        _dialogueStore = new();
+        _choiceStore = new();
+        _characterStore = new();
+        _flowStore = new();
+        _variableStore = new VariableStore();
 
-        if (!string.IsNullOrEmpty(NextScriptPath))
-        {
-            TextAsset loadedScript = Resources.Load<TextAsset>($"NovelScripts/{NextScriptPath}");
-            if (loadedScript != null)
-            {
-                _currentScript = Parser.Parse(loadedScript.text);
-                NextScriptPath = "";
-            }
-            else
-            {
-                Debug.LogError($"ScriptManager :: Cannot find script: {NextScriptPath}");
-                _currentScript = Parser.Parse(scriptFile.text);
-            }
-        }
-        else
-        {
-            _currentScript = Parser.Parse(scriptFile.text);
-        }
+        // 모든 Drawer 바인딩
+        _dialogueDrawer.Bind(_dialogueStore, _flowStore);
+        _choiceDrawer.Bind(_choiceStore);
+        _characterDrawer.Bind(_characterStore, _flowStore);
 
-        NextStep();
+        // 선택지 선택 이벤트 구독
+        _choiceDrawer.OnChoiceSelected += OnChoiceSelected;
     }
 
-    void Update()
+    private void Start()
     {
-        DisplayEffects(dialogueText);
-        if (!isChoiceAvailable && !IsPointerOverInteractiveUI() && (Input.GetMouseButtonDown(0) || Input.GetKeyDown(KeyCode.Space)))
+        // 스크립트 로드 및 컴파일
+        var (commands, labelMap) = Parser.Parse(_scriptFile.text);
+        _actions = Compiler.Compile(commands, labelMap);
+
+        // 컨텍스트 구성
+        _context = new ScriptContext
         {
-            if (dialogueTween.isAlive)
-            {
-                director.CompleteAllActions();
-                dialogueTween.Complete();
-            }
+            DialogueStore = _dialogueStore,
+            ChoiceStore = _choiceStore,
+            CharacterStore = _characterStore,
+            FlowStore = _flowStore,
+            VariableStore = _variableStore,
+            PeekNextType = () =>
+                _currentIndex + 1 < _actions.Length
+                    ? _actions[_currentIndex + 1].DebugType
+                    : null,
+            OnScriptChange = HandleScriptChange
+        };
 
-            else
-                NextStep();
-        }
-
+        // 실행 시작
+        ExecuteScriptAsync().Forget();
     }
 
-    private void NextStep()
+    private void HandleScriptChange(string scriptPath)
     {
-        if (_currentScript.HasNextCommand())
+        TextAsset script = Resources.Load<TextAsset>($"NovelScripts/{scriptPath}");
+        if (script == null)
         {
-            Command command = _currentScript.Continue();
-            Execute(command);
+            Debug.LogError($"ScriptManager :: Cannot find script: {scriptPath}");
             return;
         }
 
+        var (commands, labelMap) = Parser.Parse(script.text);
+        _actions = Compiler.Compile(commands, labelMap);
+        _currentIndex = 0;
+        ExecuteScriptAsync().Forget();
+    }
+
+    private async UniTaskVoid ExecuteScriptAsync()
+    {
+        while (_currentIndex < _actions.Length)
+        {
+            var action = _actions[_currentIndex];
+
+            // choices가 아닌 다른 명령어 실행 시 선택지 UI 숨김
+            if (_choiceStore.IsVisible.Value && action.DebugType != "choices")
+                _choiceStore.Hide();
+
+            var result = await action.Execute(_context);
+
+            switch (result.Type)
+            {
+                case ScriptResult.ResultType.Continue:
+                    _currentIndex++;
+                    break;
+
+                case ScriptResult.ResultType.Wait:
+                    await UniTask.WaitUntil(() => _inputReceived);
+                    _inputReceived = false;
+                    _currentIndex++;
+                    break;
+
+                case ScriptResult.ResultType.Jump:
+                    _currentIndex = result.NextIndex;
+                    break;
+
+                case ScriptResult.ResultType.End:
+                    Debug.Log("ScriptManager :: Script ended");
+                    return;
+            }
+        }
         Debug.Log("ScriptManager :: End of Script");
     }
 
-    private void Execute(Command command)
+    private void Update()
     {
-        switch (command.Type)
+        // 선택지 표시 중에는 입력 무시
+        if (_choiceStore.IsVisible.Value) return;
+
+        if (!IsPointerOverInteractiveUI() && (Input.GetMouseButtonDown(0) || Input.GetKeyDown(KeyCode.Space)))
         {
-            case "label":
-                Debug.Log($"ScriptManager :: Change Label: {command.GetParam("content")}");
-                NextStep();
-                return;
-            case "bg":
-                Debug.Log($"ScriptManager :: Change Background: {command.GetParam("file")}");
-                NextStep();
-                return;
-            case "char":
-                director.AddCharacter(command.GetParam("img"), command.GetParam("enter").ToLower());
-                Debug.Log($"ScriptManager :: Character: {command.GetParam("img")}");
-                NextStep();
-                return;
-            case "remove":
-                director.RemoveCharacter(command.GetParam("target"), command.GetParam("exit").ToLower());
-                Debug.Log($"ScriptManager :: Remove Character: {command.GetParam("target")} to {command.GetParam("exit").ToLower()}");
-                NextStep();
-                return;
-            case "action":
-                director.PlayAction(command.GetParam("target"), command.GetParam("anim").ToLower());
-                Debug.Log($"ScriptManager :: Action: {command.GetParam("target")} {command.GetParam("anim").ToLower()}");
-                NextStep();
-                return;
-            case "expr":
-                director.ChangeExpression(command.GetParam("target"), command.GetParam("expr").ToLower());
-                Debug.Log($"ScriptManager :: Expression: {command.GetParam("target")} {command.GetParam("expr").ToLower()}");
-                NextStep();
-                return;
-            case "spk":
-                if (speakerSprite.activeSelf == false)
-                    speakerSprite.SetActive(true);
-                if (command.GetParam("name") == "")
-                    speakerSprite.SetActive(false);
-
-                string speaker = Store.Instance.ReplaceVariables(command.GetParam("name"));
-                Debug.Log($"ScriptManager :: Speaker: {speaker}");
-                speakerText.SetText(speaker);
-                speakerText.ForceMeshUpdate(true);
-                NextStep();
-                return;
-            case "msg":
-                string dialogue = command.GetParam("content");
-                dialogue = Store.Instance.ReplaceVariables(dialogue);
-
-                DisplayDialogue(dialogue);
-
-                if (_currentScript.PeekNext()?.Type == "choices")
-                {
-                    NextStep();
-                }
-                return;
-            case "goto":
-                string targetLabel = command.GetParam("content");
-                _currentScript.JumpTo(targetLabel);
-                NextStep();
-                return;
-            case "choices":
-                Debug.Log("ScriptManager :: Show Choices");
-                isChoiceAvailable = true;
-
-                // WTF.. is this shit
-                Color tempColor = choiceBackground.color;
-                tempColor.a = 0.8f;
-                choiceBackground.color = tempColor;
-
-                foreach (var choice in command.Choices)
-                {
-                    string text = Store.Instance.ReplaceVariables(choice["content"]);
-                    string target = choice["goto"];
-                    GameObject buttonObj = Instantiate(choiceButtonPrefab, choiceButtonContainer);
-                    buttonObj.GetComponentInChildren<TextMeshProUGUI>().text = text;
-                    buttonObj
-                        .GetComponent<Button>()
-                        .onClick.AddListener(() =>
-                        {
-                            foreach (Transform child in choiceButtonContainer)
-                                Destroy(child.gameObject);
-                            isChoiceAvailable = false;
-
-                            // shitty code
-                            tempColor.a = 0f;
-                            choiceBackground.color = tempColor;
-
-                            _currentScript.JumpTo(target);
-                            NextStep();
-                        });
-                }
-                return;
-            case "var":
-                foreach (var entry in command.Params)
-                {
-                    Store.Instance.SetVariable(entry.Key, entry.Value.ToString());
-                }
-                NextStep();
-                return;
-            case "add":
-                foreach (var entry in command.Params)
-                {
-                    Store.Instance.AddVariable(entry.Key, entry.Value.ToString());
-                }
-                NextStep();
-                return;
-            case "scene":
-                string sceneName = command.GetParam("file");
-                string nextScript = command.GetParam("script");
-                Debug.Log($"ScriptManager :: Load Scene: {sceneName}, Next Script: {nextScript}");
-
-                NextScriptPath = nextScript;
-                SceneManager.LoadScene(sceneName);
-                return;
-            default:
-                Debug.LogWarning($"ScriptManager :: Unknown command: {command.Type}");
-                NextStep();
-                return;
+            if (_dialogueStore.IsDrawing.Value)
+            {
+                // 공통 FlowStore로 스킵 신호 전달
+                _flowStore.RequestSkip();
+            }
+            else
+            {
+                _inputReceived = true;
+            }
         }
     }
 
-    public void DebugReload()
+    /// <summary>ChoiceDrawer에서 선택 시 호출</summary>
+    private void OnChoiceSelected(string targetLabel, int targetIndex)
     {
-        speakerText.SetText(" ");
-        speakerText.ForceMeshUpdate(true);
-        dialogueText.SetText(" ");
-        dialogueText.ForceMeshUpdate(true);
-
-        _currentScript = Parser.Parse(scriptFile.text);
+        _currentIndex = targetIndex;
+        _inputReceived = true;
     }
 
     private bool IsPointerOverInteractiveUI()
@@ -235,65 +163,5 @@ public class VNManager : MonoBehaviour
                 return true;
 
         return false;
-    }
-
-    private void DisplayDialogue(string text)
-    {
-        // Unity 내부 최적화로 인해 줄이 바뀔 시 LinkInfo 배열이 초기화되지 않음.
-        // 따라서 수동으로 초기화를 수행.
-        dialogueText.textInfo.linkInfo = new TMP_LinkInfo[0];
-        dialogueText.SetText(text);
-        dialogueText.ForceMeshUpdate(true);
-        dialogueText.maxVisibleCharacters = 0;
-
-        dialogueTween = Tween.Custom(
-            startValue: 0f,
-            endValue: dialogueText.textInfo.characterCount,
-            duration: dialogueText.textInfo.characterCount / charsPerSecond,
-            onValueChange: x => dialogueText.maxVisibleCharacters = Mathf.RoundToInt(x),
-            ease: Ease.Linear
-        );
-    }
-
-    public bool IsDialoguePlaying()
-    {
-        return dialogueTween.isAlive;
-    }
-
-    private void DisplayEffects(TextMeshProUGUI text)
-    {
-        text.ForceMeshUpdate(true);
-
-        TMP_TextInfo textInfo = text.textInfo;
-        TMP_LinkInfo[] linkInfo = textInfo.linkInfo;
-
-        Mesh mesh = text.mesh;
-        Vector3[] vertices = mesh.vertices;
-
-        foreach (var link in linkInfo)
-        {
-            string linkName = link.GetLinkID();
-            int start = link.linkTextfirstCharacterIndex;
-            int end = link.linkTextfirstCharacterIndex + link.linkTextLength;
-
-            for (var i = start; i < end; i++)
-            {
-                TMP_CharacterInfo c = textInfo.characterInfo[i];
-                int idx = c.vertexIndex;
-
-                if (!c.isVisible)
-                    continue; // 공백은 VertexIndex 0 Return -> Visible이 안 되므로
-
-                if (linkName == "shake")
-                {
-                    Vector3 offset = new(Random.Range(-1.1f, 1.1f), Random.Range(-1.1f, 1.1f));
-                    for (byte j = 0; j < 4; j++)
-                        vertices[idx + j] += offset;
-                }
-            }
-        }
-
-        mesh.vertices = vertices;
-        text.canvasRenderer.SetMesh(mesh);
     }
 }
